@@ -7,6 +7,7 @@ korail2.korail2
 """
 
 import base64
+from html import unescape
 try:
     import curl_cffi
     HAS_CURL_CFFI = True
@@ -38,10 +39,12 @@ DEFAULT_HEADERS = {
 }
 
 KORAIL_MOBILE = "https://smart.letskorail.com:443/classes/com.korail.mobile"
+KORAIL_MOBILE_WEB = "https://smart.letskorail.com/ebizbf"
 API_ENDPOINTS = {
     "login": f"{KORAIL_MOBILE}.login.Login",
     "logout": f"{KORAIL_MOBILE}.common.logout",
     "search_schedule": f"{KORAIL_MOBILE}.seatMovie.ScheduleView",
+    "search_schedule_web": f"{KORAIL_MOBILE_WEB}/EbizBfBookingTrainSearchM.do",
     "reserve": f"{KORAIL_MOBILE}.certification.TicketReservation",
     "cancel": f"{KORAIL_MOBILE}.reservationCancel.ReservationCancelChk",
     "myticketseat": f"{KORAIL_MOBILE}.refunds.SelTicketInfo",
@@ -51,6 +54,64 @@ API_ENDPOINTS = {
     "pay": f"{KORAIL_MOBILE}.payment.ReservationPayment",
     "refund": f"{KORAIL_MOBILE}.refunds.RefundsRequest",
     "code": f"{KORAIL_MOBILE}.common.code.do",
+}
+
+KORAIL_WEB_STATION_CODES = {
+    "서울": "0001",
+    "용산": "0104",
+    "영등포": "0002",
+    "광명": "0501",
+    "수원": "0003",
+    "천안아산": "0502",
+    "오송": "0297",
+    "대전": "0010",
+    "서대전": "0025",
+    "김천구미": "0507",
+    "김천(구미)": "0507",
+    "동대구": "0015",
+    "경주": "0508",
+    "포항": "0515",
+    "밀양": "0017",
+    "구포": "0019",
+    "부산": "0020",
+    "울산": "0509",
+    "울산(통도사)": "0509",
+    "마산": "0059",
+    "창원중앙": "0512",
+    "경산": "0024",
+    "논산": "0027",
+    "익산": "0030",
+    "정읍": "0033",
+    "광주송정": "0036",
+    "목포": "0041",
+    "전주": "0045",
+    "순천": "0051",
+    "여수EXPO": "0053",
+    "청량리": "0090",
+    "강릉": "0115",
+    "행신": "0390",
+    "정동진": "0262",
+    "진주": "0063",
+    "진영": "0056",
+    "창원": "0057",
+    "서대구": "0506",
+    "평택지제": "0553",
+    "수서": "0551",
+    "동탄": "0552",
+}
+
+KORAIL_WEB_TRAIN_TYPES = {
+    "00": "KTX",
+    "07": "KTX-산천",
+    "10": "KTX-산천",
+    "16": "KTX-이음",
+    "19": "KTX-청룡",
+    "09": "ITX-청춘",
+    "08": "ITX-새마을",
+    "18": "ITX-마음",
+    "04": "누리로",
+    "02": "무궁화",
+    "01": "새마을",
 }
 
 
@@ -608,6 +669,133 @@ class Korail:
             raise KorailError(h_msg_txt, h_msg_cd)
         return True
 
+    def _web_station_code(self, station):
+        try:
+            return KORAIL_WEB_STATION_CODES[station]
+        except KeyError as exc:
+            raise KorailError(
+                f"KTX mobile-web fallback does not know station code: {station}"
+            ) from exc
+
+    def _web_train_type(self, train_type):
+        if train_type in (TrainType.ALL, None):
+            return "05"
+        if train_type in (TrainType.KTX, TrainType.KTX_SANCHEON):
+            return "00"
+        return {
+            TrainType.SAEMAEUL: "08",
+            TrainType.ITX_SAEMAEUL: "08",
+            TrainType.ITX_CHEONGCHUN: "09",
+            TrainType.MUGUNGHWA: "02",
+            TrainType.NURIRO: "04",
+        }.get(train_type, "05")
+
+    def _search_train_mobile_web(
+        self, dep, arr, date, time, train_type, counts, include_no_seats
+    ):
+        dep_code = self._web_station_code(dep)
+        arr_code = self._web_station_code(arr)
+        web_train_type = self._web_train_type(train_type)
+        adult_count = counts["adult"]
+        child_count = counts["child"] + counts["toddler"]
+
+        data = {
+            "radJobId": "1",
+            "txtMenuId": "11",
+            "txtGoStart": dep,
+            "txtGoEnd": arr,
+            "txtGoStartCode": dep_code,
+            "txtGoEndCode": arr_code,
+            "selGoTrain": web_train_type,
+            "selGoRoom": "",
+            "txtGoHour": time,
+            "txtGoAbrdDt": date,
+            "txtGoTrnNo": "",
+            "useSeatFlg": "",
+            "useServiceFlg": "",
+            "selGoSeat": "",
+            "selGoService": "",
+            "selGoSeat1": "015",
+            "selGoSeat2": "",
+            "txtPsgFlg_1": str(adult_count),
+            "txtPsgFlg_2": str(child_count),
+            "txtPsgFlg_3": str(counts["senior"]),
+            "txtPsgFlg_4": str(counts["disability1to3"]),
+            "txtPsgFlg_5": str(counts["disability4to6"]),
+            "txtPsgCnt1": str(adult_count + child_count),
+            "txtPsgCnt2": "0",
+            "txtGoHour_first": time,
+            "txtGoStartCode2": "",
+            "txtGoEndCode2": "",
+            "selGoTrain2": web_train_type,
+            "hidJobDv": "NRM",
+            "txtSeatAttCd_4": "015",
+            "txtSeatAttCd_3": "000",
+            "txtSeatAttCd_2": "000",
+            "radTrvCate": "1",
+        }
+
+        r = self._session.post(API_ENDPOINTS["search_schedule_web"], data=data)
+        self._log(r.text)
+        trains = self._parse_mobile_web_trains(r.text, dep, arr)
+        if not include_no_seats:
+            trains = [train for train in trains if train.has_seat()]
+        if not trains:
+            raise NoResultsError()
+        return trains
+
+    def _parse_mobile_web_trains(self, html, dep, arr):
+        train_infos = re.finditer(
+            r"train\[(\d+)\]\s*=\s*new train_info\((.*?)\);", html, re.S
+        )
+        trains = []
+        for match in train_infos:
+            index = int(match.group(1))
+            values = [unescape(v) for v in re.findall(r'"([^"]*)"', match.group(2))]
+            if len(values) < 43:
+                continue
+
+            row_match = re.search(
+                rf"<tr id=['\"]trRsv_{index}['\"]>(.*?)</tr>", html, re.S
+            )
+            row_html = row_match.group(1) if row_match else ""
+            has_general = f"linkRsv1_{index}" in row_html
+            has_special = f"linkRsv2_{index}" in row_html
+
+            # Existing KTX reservation code handles only direct, one-leg trains.
+            if values[16] != "1":
+                continue
+
+            train_type_name = KORAIL_WEB_TRAIN_TYPES.get(values[22], "KTX")
+            trains.append(
+                Train(
+                    {
+                        "h_trn_clsf_cd": values[22],
+                        "h_trn_clsf_nm": train_type_name,
+                        "h_trn_gp_cd": values[23],
+                        "h_trn_no": values[20],
+                        "h_expct_dlay_hr": values[29],
+                        "h_dpt_rs_stn_nm": dep,
+                        "h_dpt_rs_stn_cd": values[18],
+                        "h_dpt_dt": values[25],
+                        "h_dpt_tm": values[26],
+                        "h_arv_rs_stn_nm": arr,
+                        "h_arv_rs_stn_cd": values[19],
+                        "h_arv_dt": values[27],
+                        "h_arv_tm": values[28],
+                        "h_run_dt": values[24],
+                        "h_rsv_psb_flg": "Y" if has_general or has_special else "N",
+                        "h_rsv_psb_nm": (
+                            "예약가능" if has_general or has_special else "매진"
+                        ),
+                        "h_spe_rsv_cd": "11" if has_special else "00",
+                        "h_gen_rsv_cd": "11" if has_general else "00",
+                        "h_wait_rsv_flg": "0",
+                    }
+                )
+            )
+        return trains
+
     def search_train(
         self,
         dep,
@@ -673,23 +861,31 @@ class Korail:
         self._log(r.text)
         j = json.loads(r.text)
 
-        if self._result_check(j):
-            trains = [
-                Train(info) for info in j.get("trn_infos", {}).get("trn_info", [])
-            ]
-            filter_fns = [lambda x: x.has_seat()]
+        try:
+            self._result_check(j)
+        except KorailError as exc:
+            if exc.code != "MACRO ERROR":
+                raise
+            return self._search_train_mobile_web(
+                dep, arr, date, time, train_type, counts, include_no_seats
+            )
 
-            if include_no_seats:
-                filter_fns.append(lambda x: not x.has_seat())
-            if include_waiting_list:
-                filter_fns.append(lambda x: x.has_waiting_list())
+        trains = [
+            Train(info) for info in j.get("trn_infos", {}).get("trn_info", [])
+        ]
+        filter_fns = [lambda x: x.has_seat()]
 
-            trains = [t for t in trains if any(f(t) for f in filter_fns)]
+        if include_no_seats:
+            filter_fns.append(lambda x: not x.has_seat())
+        if include_waiting_list:
+            filter_fns.append(lambda x: x.has_waiting_list())
 
-            if not trains:
-                raise NoResultsError()
+        trains = [t for t in trains if any(f(t) for f in filter_fns)]
 
-            return trains
+        if not trains:
+            raise NoResultsError()
+
+        return trains
 
     def reserve(self, train, passengers=None, option=ReserveOption.GENERAL_FIRST):
         reserving_seat = train.has_seat() or train.wait_reserve_flag < 0
