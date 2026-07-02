@@ -600,7 +600,10 @@ def login(rail_type="SRT", debug=False):
         _keyring_get(rail_type, "id") is None
         or _keyring_get(rail_type, "pass") is None
     ):
-        set_login(rail_type)
+        if not set_login(rail_type, debug=debug):
+            if rail_type == "KTX":
+                return Korail("", "", auto_login=False, verbose=debug)
+            raise SRTError("로그인 정보가 설정되지 않았습니다")
 
     user_id = _keyring_get(rail_type, "id")
     password = _keyring_get(rail_type, "pass")
