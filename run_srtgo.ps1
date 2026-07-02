@@ -8,6 +8,15 @@ $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $RootDir
 
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+try {
+    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+} catch {
+    # Some redirected/non-interactive shells do not expose console encoding.
+}
+
 $VenvDir = if ($env:VENV_DIR) { $env:VENV_DIR } else { ".venv-win" }
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $VenvSrtgo = Join-Path $VenvDir "Scripts\srtgo.exe"

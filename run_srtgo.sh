@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+export PYTHONUTF8="${PYTHONUTF8:-1}"
+export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+
 VENV_DIR="${VENV_DIR:-.venv}"
 
 case "$(uname -s 2>/dev/null || echo unknown)" in
@@ -43,13 +46,31 @@ install_package() {
     "$VENV_PYTHON" -m pip install -e .
 }
 
+create_venv() {
+    if "${PY_CMD[@]}" -m venv "$VENV_DIR"; then
+        return
+    fi
+
+    case "$(uname -r 2>/dev/null | tr '[:upper:]' '[:lower:]')" in
+        *microsoft*|*wsl*)
+            echo "Failed to create venv in WSL. On Debian/Ubuntu WSL, install python3-venv first:" >&2
+            echo "  sudo apt install python3-venv" >&2
+            ;;
+        *)
+            echo "Failed to create virtual environment: $VENV_DIR" >&2
+            ;;
+    esac
+    exit 1
+}
+
 if [[ ! -f "$ACTIVATE_PATH" || ! -x "$VENV_PYTHON" ]]; then
     select_python
     echo "Creating virtual environment: $VENV_DIR"
-    "${PY_CMD[@]}" -m venv "$VENV_DIR"
+    create_venv
     install_package
 fi
 
+# shellcheck disable=SC1090
 source "$ACTIVATE_PATH"
 
 if ! command -v srtgo >/dev/null 2>&1; then

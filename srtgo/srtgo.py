@@ -407,7 +407,56 @@ def _seat_type_label(seat_type) -> str:
     return labels.get(seat_type, str(seat_type))
 
 
+def _is_wsl() -> bool:
+    if os.name != "posix" or not os.path.exists("/proc/version"):
+        return False
+
+    try:
+        with open("/proc/version", encoding="utf-8") as proc_version:
+            version = proc_version.read().lower()
+    except OSError:
+        return False
+
+    return "microsoft" in version or "wsl" in version
+
+
+def _find_command(*candidates: str):
+    for candidate in candidates:
+        command = shutil.which(candidate)
+        if command:
+            return command
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def _copy_to_clipboard(text: str) -> bool:
+    if os.name == "nt" or _is_wsl():
+        powershell = _find_command(
+            "powershell.exe",
+            "powershell",
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        )
+        if powershell:
+            try:
+                subprocess.run(
+                    [
+                        powershell,
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        "Set-Clipboard -Value $args[0]",
+                        text,
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return True
+            except (OSError, subprocess.CalledProcessError):
+                pass
+
     commands = (
         ("pbcopy", ()),
         ("clip", ()),
@@ -433,29 +482,6 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def _is_wsl() -> bool:
-    if os.name != "posix" or not os.path.exists("/proc/version"):
-        return False
-
-    try:
-        with open("/proc/version", encoding="utf-8") as proc_version:
-            version = proc_version.read().lower()
-    except OSError:
-        return False
-
-    return "microsoft" in version or "wsl" in version
-
-
-def _find_command(*candidates: str):
-    for candidate in candidates:
-        command = shutil.which(candidate)
-        if command:
-            return command
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
 def _run_open_command(command: list[str]) -> bool:
     try:
         subprocess.run(
@@ -471,13 +497,10 @@ def _run_open_command(command: list[str]) -> bool:
 
 def _open_url(url: str) -> bool:
     quoted_url = f'"{url}"'
-    if _is_wsl():
-        cmd = _find_command("cmd.exe", "/mnt/c/Windows/System32/cmd.exe")
-        if cmd and _run_open_command([cmd, "/c", "start", "", quoted_url]):
-            return True
-
+    if os.name == "nt" or _is_wsl():
         powershell = _find_command(
             "powershell.exe",
+            "powershell",
             "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
         )
         if powershell and _run_open_command(
@@ -491,6 +514,10 @@ def _open_url(url: str) -> bool:
                 url,
             ]
         ):
+            return True
+
+        cmd = _find_command("cmd.exe", "/mnt/c/Windows/System32/cmd.exe")
+        if cmd and _run_open_command([cmd, "/c", "start", "", quoted_url]):
             return True
 
     if sys_cmd := _find_command("open"):
