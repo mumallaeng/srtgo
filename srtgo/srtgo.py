@@ -445,9 +445,6 @@ def _handoff_ktx_manual_booking(
     else:
         print(colored(f"브라우저 열기에 실패했습니다: {url}", "yellow"))
 
-    tgprintf = get_telegram()
-    asyncio.run(tgprintf(handoff_text))
-
 
 def _train_identity(train) -> tuple:
     return (
