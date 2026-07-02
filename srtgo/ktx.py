@@ -583,12 +583,17 @@ class Korail:
         self.korail_pw = korail_pw
         self.verbose = verbose
         self.logined = False
+        self.last_login_error = None
         self.membership_number = None
         self.name = None
         self.email = None
         self.phone_number = None
         if auto_login:
             self.login(korail_id, korail_pw)
+
+    @property
+    def is_login(self):
+        return self.logined
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -650,8 +655,13 @@ class Korail:
                 f"로그인 성공: {self.name} (멤버십번호: {self.membership_number}, 전화번호: {self.phone_number})"
             )
             self.logined = True
+            self.last_login_error = None
             return True
         self.logined = False
+        self.last_login_error = (
+            j.get("h_msg_cd"),
+            j.get("h_msg_txt") or "KTX login failed",
+        )
         return False
 
     def logout(self):

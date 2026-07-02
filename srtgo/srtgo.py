@@ -414,19 +414,26 @@ def set_login(rail_type="SRT", debug=False):
         return False
 
     try:
-        SRT(
-            login_info["id"], login_info["pass"], verbose=debug
-        ) if rail_type == "SRT" else Korail(
-            login_info["id"], login_info["pass"], verbose=debug
+        rail = (
+            SRT(login_info["id"], login_info["pass"], verbose=debug)
+            if rail_type == "SRT"
+            else Korail(login_info["id"], login_info["pass"], verbose=debug)
         )
+
+        if rail_type == "KTX" and not rail.is_login:
+            code, msg = rail.last_login_error or (None, "KTX login failed")
+            raise KorailError(msg, code)
 
         keyring.set_password(rail_type, "id", login_info["id"])
         keyring.set_password(rail_type, "pass", login_info["pass"])
         keyring.set_password(rail_type, "ok", "1")
         return True
-    except SRTError as err:
+    except (SRTError, KorailError) as err:
         print(err)
-        keyring.delete_password(rail_type, "ok")
+        try:
+            keyring.delete_password(rail_type, "ok")
+        except keyring.errors.PasswordDeleteError:
+            pass
         return False
 
 
@@ -636,6 +643,18 @@ def reserve(rail_type="SRT", debug=False):
 
     if not trains:
         print(colored("예약 가능한 열차가 없습니다", "green", "on_red") + "\n")
+        return
+
+    if not is_srt and not rail.is_login:
+        print("\n".join(train_decorator(train) for train in trains))
+        print(
+            colored(
+                "KTX 로그인 API가 차단되어 조회만 가능합니다. 실제 예매는 중단합니다.",
+                "green",
+                "on_red",
+            )
+            + "\n"
+        )
         return
 
     # Get train selection
