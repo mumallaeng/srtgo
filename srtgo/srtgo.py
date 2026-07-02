@@ -130,6 +130,7 @@ RESERVE_INTERVAL_MIN = 0.25
 
 WAITING_BAR = ["|", "/", "-", "\\"]
 KTX_MANUAL_BOOKING_URL = "https://www.korail.com/ticket/search/list"
+SRT_PAYMENT_URL = "https://etk.srail.kr/hpg/hra/02/selectReservationList.do?pageId=TK0102010000"
 _KEYRING_FALLBACK = {}
 _KEYRING_WARNING_SHOWN = False
 
@@ -610,6 +611,42 @@ def _handoff_ktx_manual_booking(
         print(colored(f"브라우저 열기에 실패했습니다: {url}", "yellow"))
 
 
+def _format_srt_payment_handoff_text(reservation) -> str:
+    lines = [
+        "[SRT 결제 핸드오프]",
+        f"예약번호: {reservation.reservation_number}",
+        f"예약: {reservation}",
+        f"열차번호: {reservation.train_number}",
+        f"출발: {reservation.dep_station_name} {_format_date(reservation.dep_date)} {_format_time(reservation.dep_time)}",
+        f"도착: {reservation.arr_station_name} {_format_time(reservation.arr_time)}",
+        f"결제금액: {reservation.total_cost}원",
+        f"결제페이지: {SRT_PAYMENT_URL}",
+    ]
+    if reservation.payment_date and reservation.payment_time:
+        lines.insert(
+            -1,
+            f"구입기한: {_format_date(reservation.payment_date)} {_format_time(reservation.payment_time)}",
+        )
+    return "\n".join(lines)
+
+
+def _handoff_srt_payment(reservation) -> None:
+    handoff_text = _format_srt_payment_handoff_text(reservation)
+    copied = _copy_to_clipboard(handoff_text)
+    opened = _open_url(SRT_PAYMENT_URL)
+
+    print("\n" + colored("SRT 예약이 생성되어 공식 SRT 결제 페이지로 넘깁니다.", "green"))
+    print(handoff_text)
+    if copied:
+        print(colored("예약 정보를 클립보드에 복사했습니다.", "green"))
+    else:
+        print(colored("클립보드 복사에 실패했습니다. 위 내용을 직접 참고하세요.", "yellow"))
+    if opened:
+        print(colored("공식 SRT 발권/취소 페이지를 새 창으로 열었습니다.", "green"))
+    else:
+        print(colored(f"브라우저 열기에 실패했습니다: {SRT_PAYMENT_URL}", "yellow"))
+
+
 def _train_identity(train) -> tuple:
     return (
         train.train_no,
@@ -997,11 +1034,16 @@ def reserve(rail_type="SRT", debug=False):
 
         print(colored(f"\n\n🎫 🎉 예매 성공!!! 🎉 🎫\n{msg}\n", "red", "on_green"))
 
+        paid = False
         if options["pay"] and not reserve.is_waiting and pay_card(rail, reserve):
             print(
                 colored("\n\n💳 ✨ 결제 성공!!! ✨ 💳\n\n", "green", "on_red"), end=""
             )
             msg += "\n결제 완료"
+            paid = True
+
+        if is_srt and not paid and not reserve.is_waiting and not reserve.paid:
+            _handoff_srt_payment(reserve)
 
         tgprintf = get_telegram()
         asyncio.run(tgprintf(msg))
@@ -1204,9 +1246,16 @@ def check_reservation(rail_type="SRT", debug=False):
             not all_reservations[choice].is_ticket
             and not all_reservations[choice].is_waiting
         ):
+            payment_choices = [("결제하기", 1), ("취소하기", 2)]
+            if rail_type == "SRT":
+                payment_choices = [
+                    ("브라우저에서 결제하기", 3),
+                    ("저장 카드로 결제하기", 1),
+                    ("취소하기", 2),
+                ]
             answer = inquirer.list_input(
-                message=f"결재 대기 승차권: {all_reservations[choice]}",
-                choices=[("결제하기", 1), ("취소하기", 2)],
+                message=f"결제 대기 승차권: {all_reservations[choice]}",
+                choices=payment_choices,
             )
 
             if answer == 1:
@@ -1217,6 +1266,8 @@ def check_reservation(rail_type="SRT", debug=False):
                     )
             elif answer == 2:
                 rail.cancel(all_reservations[choice])
+            elif answer == 3:
+                _handoff_srt_payment(all_reservations[choice])
             return
 
         # Else
