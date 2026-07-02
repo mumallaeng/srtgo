@@ -8,14 +8,18 @@ from json.decoder import JSONDecodeError
 from random import gammavariate
 from termcolor import colored
 from typing import Awaitable, Callable, List, Optional, Tuple, Union
+from urllib.parse import urlencode
 
 import asyncio
 import click
 import inquirer
 import keyring
+import shutil
+import subprocess
 import telegram
 import time
 import re
+import webbrowser
 
 from .ktx import (
     Korail,
@@ -123,6 +127,7 @@ RESERVE_INTERVAL_SCALE = 0.25
 RESERVE_INTERVAL_MIN = 0.25
 
 WAITING_BAR = ["|", "/", "-", "\\"]
+KTX_MANUAL_BOOKING_URL = "https://smart.letskorail.com/ebizbf/EbizBfTicketSearchM.do"
 
 RailType = Union[str, None]
 ChoiceType = Union[int, None]
@@ -335,6 +340,123 @@ def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
                 await bot.send_message(chat_id=chat_id, text=text)
 
     return tgprintf
+
+
+def _format_date(date: str) -> str:
+    return f"{date[:4]}-{date[4:6]}-{date[6:]}"
+
+
+def _format_time(time_value: str) -> str:
+    return f"{time_value[:2]}:{time_value[2:4]}"
+
+
+def _seat_type_label(seat_type) -> str:
+    labels = {
+        SeatType.GENERAL_FIRST: "일반실 우선",
+        SeatType.GENERAL_ONLY: "일반실만",
+        SeatType.SPECIAL_FIRST: "특실 우선",
+        SeatType.SPECIAL_ONLY: "특실만",
+        ReserveOption.GENERAL_FIRST: "일반실 우선",
+        ReserveOption.GENERAL_ONLY: "일반실만",
+        ReserveOption.SPECIAL_FIRST: "특실 우선",
+        ReserveOption.SPECIAL_ONLY: "특실만",
+    }
+    return labels.get(seat_type, str(seat_type))
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    commands = (
+        ("pbcopy", ()),
+        ("clip", ()),
+        ("xclip", ("-selection", "clipboard")),
+        ("xsel", ("--clipboard", "--input")),
+    )
+    for command, args in commands:
+        if not shutil.which(command):
+            continue
+        try:
+            subprocess.run(
+                [command, *args],
+                input=text,
+                text=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    return False
+
+
+def _ktx_manual_booking_url(info: dict) -> str:
+    query = urlencode(
+        {
+            "txtGoStart": info["departure"],
+            "txtGoEnd": info["arrival"],
+            "txtGoAbrdDt": info["date"],
+            "txtGoHour": info["time"][:2],
+        }
+    )
+    return f"{KTX_MANUAL_BOOKING_URL}?{query}"
+
+
+def _format_ktx_handoff_text(
+    info: dict,
+    train,
+    msg_passengers: list[str],
+    seat_type,
+) -> str:
+    return "\n".join(
+        [
+            "[KTX 수동 예매]",
+            f"구간: {info['departure']} -> {info['arrival']}",
+            f"검색일시: {_format_date(info['date'])} {_format_time(info['time'])} 이후",
+            f"대상열차: {train}",
+            f"열차번호: {train.train_no}",
+            f"출발: {train.dep_name} {_format_date(train.dep_date)} {_format_time(train.dep_time)}",
+            f"도착: {train.arr_name} {_format_date(train.arr_date)} {_format_time(train.arr_time)}",
+            f"승객: {', '.join(msg_passengers)}",
+            f"좌석: {_seat_type_label(seat_type)}",
+            f"예매페이지: {_ktx_manual_booking_url(info)}",
+        ]
+    )
+
+
+def _handoff_ktx_manual_booking(
+    info: dict,
+    train,
+    msg_passengers: list[str],
+    seat_type,
+) -> None:
+    url = _ktx_manual_booking_url(info)
+    handoff_text = _format_ktx_handoff_text(info, train, msg_passengers, seat_type)
+    copied = _copy_to_clipboard(handoff_text)
+    opened = webbrowser.open(url)
+
+    print("\n" + colored("KTX 좌석이 확인되어 수동 예매로 넘깁니다.", "green"))
+    print(handoff_text)
+    if copied:
+        print(colored("검색 조건을 클립보드에 복사했습니다.", "green"))
+    else:
+        print(colored("클립보드 복사에 실패했습니다. 위 내용을 직접 참고하세요.", "yellow"))
+    if opened:
+        print(colored("공식 코레일 예매 페이지를 열었습니다.", "green"))
+    else:
+        print(colored(f"브라우저 열기에 실패했습니다: {url}", "yellow"))
+
+    tgprintf = get_telegram()
+    asyncio.run(tgprintf(handoff_text))
+
+
+def _train_identity(train) -> tuple:
+    return (
+        train.train_no,
+        train.dep_date,
+        train.dep_time,
+        train.dep_name,
+        train.arr_name,
+    )
 
 
 def set_card() -> None:
@@ -645,23 +767,28 @@ def reserve(rail_type="SRT", debug=False):
         print(colored("예약 가능한 열차가 없습니다", "green", "on_red") + "\n")
         return
 
-    if not is_srt and not rail.is_login:
+    ktx_manual_handoff = not is_srt and not rail.is_login
+    if ktx_manual_handoff:
         print("\n".join(train_decorator(train) for train in trains))
         print(
             colored(
-                "KTX 로그인 API가 차단되어 조회만 가능합니다. 실제 예매는 중단합니다.",
+                "KTX 로그인 API가 차단되어 수동 예매 핸드오프 모드로 진행합니다.",
                 "green",
                 "on_red",
             )
             + "\n"
         )
-        return
 
     # Get train selection
     q_choice = [
         inquirer.Checkbox(
             "trains",
-            message="예약할 열차 선택 (↕:이동, Space: 선택, Enter: 완료, Ctrl-A: 전체선택, Ctrl-R: 선택해제, Ctrl-C: 취소)",
+            message=(
+                "수동 예매로 넘길 열차 선택"
+                if ktx_manual_handoff
+                else "예약할 열차 선택"
+            )
+            + " (↕:이동, Space: 선택, Enter: 완료, Ctrl-A: 전체선택, Ctrl-R: 선택해제, Ctrl-C: 취소)",
             choices=[(train_decorator(train), i) for i, train in enumerate(trains)],
             default=None,
         ),
@@ -673,6 +800,7 @@ def reserve(rail_type="SRT", debug=False):
         return
 
     n_trains = len(choice["trains"])
+    selected_trains = [_train_identity(trains[i]) for i in choice["trains"]]
 
     # Get seat type preference
     seat_type = SeatType if is_srt else ReserveOption
@@ -686,14 +814,18 @@ def reserve(rail_type="SRT", debug=False):
                 ("특실 우선", seat_type.SPECIAL_FIRST),
                 ("특실만", seat_type.SPECIAL_ONLY),
             ],
-        ),
-        inquirer.Confirm("pay", message="예매 시 카드 결제", default=False),
+        )
     ]
+    if not ktx_manual_handoff:
+        q_options.append(
+            inquirer.Confirm("pay", message="예매 시 카드 결제", default=False)
+        )
 
     options = inquirer.prompt(q_options)
     if options is None:
         print(colored("예매 정보 입력 중 취소되었습니다", "green", "on_red") + "\n")
         return
+    options["pay"] = options.get("pay", False)
 
     # Reserve function
     def _reserve(train):
@@ -729,9 +861,18 @@ def reserve(rail_type="SRT", debug=False):
             )
 
             trains = rail.search_train(**params)
-            for i in choice["trains"]:
-                if _is_seat_available(trains[i], options["type"], rail_type):
-                    _reserve(trains[i])
+            train_by_identity = {_train_identity(train): train for train in trains}
+            for train_id in selected_trains:
+                train = train_by_identity.get(train_id)
+                if train is None:
+                    continue
+                if _is_seat_available(train, options["type"], rail_type):
+                    if ktx_manual_handoff:
+                        _handoff_ktx_manual_booking(
+                            info, train, msg_passengers, options["type"]
+                        )
+                    else:
+                        _reserve(train)
                     return
             _sleep()
 
@@ -770,8 +911,18 @@ def reserve(rail_type="SRT", debug=False):
             msg = ex.msg
             if "Need to Login" in msg:
                 rail = login(rail_type, debug=debug)
-                if not rail.is_login and not _handle_error(ex):
-                    return
+                if not rail.is_login:
+                    if rail_type == "KTX":
+                        ktx_manual_handoff = True
+                        print(
+                            colored(
+                                "\nKTX 재로그인이 차단되어 수동 예매 핸드오프 모드로 전환합니다.",
+                                "green",
+                                "on_red",
+                            )
+                        )
+                    elif not _handle_error(ex):
+                        return
             elif not any(
                 err in msg
                 for err in ("Sold out", "잔여석없음", "예약대기자한도수초과")
