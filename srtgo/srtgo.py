@@ -23,6 +23,7 @@ import re
 import webbrowser
 
 from .ktx import (
+    KORAIL_WEB_STATION_CODES,
     Korail,
     KorailError,
     ReserveOption,
@@ -128,7 +129,7 @@ RESERVE_INTERVAL_SCALE = 0.25
 RESERVE_INTERVAL_MIN = 0.25
 
 WAITING_BAR = ["|", "/", "-", "\\"]
-KTX_MANUAL_BOOKING_URL = "https://smart.letskorail.com/ebizbf/EbizBfTicketSearchM.do"
+KTX_MANUAL_BOOKING_URL = "https://www.korail.com/ticket/search/list"
 _KEYRING_FALLBACK = {}
 _KEYRING_WARNING_SHOWN = False
 
@@ -527,12 +528,38 @@ def _open_url(url: str) -> bool:
 
 
 def _ktx_manual_booking_url(info: dict) -> str:
+    departure = info["departure"]
+    arrival = info["arrival"]
+    departure_code = KORAIL_WEB_STATION_CODES.get(departure, "")
+    arrival_code = KORAIL_WEB_STATION_CODES.get(arrival, "")
     query = urlencode(
         {
-            "txtGoStart": info["departure"],
-            "txtGoEnd": info["arrival"],
+            "searchType": "GENERAL",
+            "txtGoStart": departure,
+            "txtGoEnd": arrival,
+            "txtGoStartCode": departure_code,
+            "txtGoEndCode": arrival_code,
             "txtGoAbrdDt": info["date"],
-            "txtGoHour": info["time"][:2],
+            "txtGoHour": info["time"],
+            "txtMenuId": "11",
+            "txtPsgFlg_1": info.get("adult", 1),
+            "txtPsgFlg_2": info.get("child", 0),
+            "txtPsgFlg_8": 0,
+            "txtPsgFlg_3": info.get("senior", 0),
+            "txtPsgFlg_4": info.get("disability1to3", 0),
+            "txtPsgFlg_5": info.get("disability4to6", 0),
+            "txtPsgFlg_99": 0,
+            "txtTrnGpCd": "100",
+            "selGoTrain": "100",
+            "rtYn": "N",
+            "radJobId": "1",
+            "adjStnScdlOfrFlg": "N",
+            "adjStnScdlOfrFlg2": "N",
+            "srtCheckYn": "N",
+            "ebizCrossCheck": "N",
+            "txtSeatAttCd_2": "000",
+            "txtSeatAttCd_3": "000",
+            "txtSeatAttCd_4": "015",
         }
     )
     return f"{KTX_MANUAL_BOOKING_URL}?{query}"
