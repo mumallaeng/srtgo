@@ -432,30 +432,10 @@ def _find_command(*candidates: str):
 
 def _copy_to_clipboard(text: str) -> bool:
     if os.name == "nt" or _is_wsl():
-        powershell = _find_command(
-            "powershell.exe",
-            "powershell",
-            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-        )
-        if powershell:
-            try:
-                subprocess.run(
-                    [
-                        powershell,
-                        "-NoProfile",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-Command",
-                        "Set-Clipboard -Value $args[0]",
-                        text,
-                    ],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                return True
-            except (OSError, subprocess.CalledProcessError):
-                pass
+        env = os.environ.copy()
+        env["SRTGO_CLIPBOARD_TEXT"] = text
+        if _run_powershell("Set-Clipboard -Value $env:SRTGO_CLIPBOARD_TEXT", env):
+            return True
 
     commands = (
         ("pbcopy", ()),
@@ -482,42 +462,54 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def _run_open_command(command: list[str]) -> bool:
+def _run_open_command(command: list[str], env: dict | None = None) -> bool:
     try:
         subprocess.run(
             command,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
         return True
     except (OSError, subprocess.CalledProcessError):
         return False
 
 
+def _run_powershell(command: str, env: dict | None = None) -> bool:
+    powershell = _find_command(
+        "powershell.exe",
+        "powershell",
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    )
+    if not powershell:
+        return False
+
+    return _run_open_command(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        env=env,
+    )
+
+
 def _open_url(url: str) -> bool:
-    quoted_url = f'"{url}"'
     if os.name == "nt" or _is_wsl():
-        powershell = _find_command(
-            "powershell.exe",
-            "powershell",
-            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
-        )
-        if powershell and _run_open_command(
-            [
-                powershell,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                "Start-Process -FilePath $args[0]",
-                url,
-            ]
-        ):
+        env = os.environ.copy()
+        env["SRTGO_OPEN_URL"] = url
+        if _run_powershell("Start-Process -FilePath $env:SRTGO_OPEN_URL", env):
             return True
 
         cmd = _find_command("cmd.exe", "/mnt/c/Windows/System32/cmd.exe")
-        if cmd and _run_open_command([cmd, "/c", "start", "", quoted_url]):
+        if cmd and _run_open_command(
+            [cmd, "/c", 'start "" "%SRTGO_OPEN_URL%"'],
+            env=env,
+        ):
             return True
 
     if sys_cmd := _find_command("open"):
@@ -527,7 +519,9 @@ def _open_url(url: str) -> bool:
         return _run_open_command([sys_cmd, url])
 
     if sys_cmd := _find_command("cmd.exe"):
-        return _run_open_command([sys_cmd, "/c", "start", "", quoted_url])
+        env = os.environ.copy()
+        env["SRTGO_OPEN_URL"] = url
+        return _run_open_command([sys_cmd, "/c", 'start "" "%SRTGO_OPEN_URL%"'], env)
 
     return webbrowser.open_new(url)
 
