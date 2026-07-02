@@ -128,6 +128,8 @@ RESERVE_INTERVAL_MIN = 0.25
 
 WAITING_BAR = ["|", "/", "-", "\\"]
 KTX_MANUAL_BOOKING_URL = "https://smart.letskorail.com/ebizbf/EbizBfTicketSearchM.do"
+_KEYRING_FALLBACK = {}
+_KEYRING_WARNING_SHOWN = False
 
 RailType = Union[str, None]
 ChoiceType = Union[int, None]
@@ -209,7 +211,7 @@ def set_station(rail_type: RailType) -> bool:
         print("선택된 역이 없습니다.")
         return False
 
-    keyring.set_password(
+    _keyring_set(
         rail_type, "station", (selected_stations := ",".join(selected))
     )
     print(f"선택된 역: {selected_stations}")
@@ -223,7 +225,7 @@ def edit_station(rail_type: RailType) -> bool:
             inquirer.Text(
                 "stations",
                 message="역 수정 (예: 수서,대전,동대구)",
-                default=keyring.get_password(rail_type, "station") or "",
+                default=_keyring_get(rail_type, "station") or "",
             )
         ]
     )
@@ -244,7 +246,7 @@ def edit_station(rail_type: RailType) -> bool:
             selected = DEFAULT_STATIONS[rail_type]
             break
 
-    keyring.set_password(
+    _keyring_set(
         rail_type, "station", (selected_stations := ",".join(selected))
     )
     print(f"선택된 역: {selected_stations}")
@@ -253,7 +255,7 @@ def edit_station(rail_type: RailType) -> bool:
 
 def get_station(rail_type: RailType) -> Tuple[List[str], List[int]]:
     stations = STATIONS[rail_type]
-    station_key = keyring.get_password(rail_type, "station")
+    station_key = _keyring_get(rail_type, "station")
 
     if not station_key:
         return stations, DEFAULT_STATIONS[rail_type]
@@ -285,17 +287,57 @@ def set_options():
         return
 
     options = choices.get("options", [])
-    keyring.set_password("SRT", "options", ",".join(options))
+    _keyring_set("SRT", "options", ",".join(options))
 
 
 def get_options():
-    options = keyring.get_password("SRT", "options") or ""
+    options = _keyring_get("SRT", "options") or ""
     return options.split(",") if options else []
 
 
+def _warn_keyring_fallback(err) -> None:
+    global _KEYRING_WARNING_SHOWN
+    if _KEYRING_WARNING_SHOWN:
+        return
+
+    print(
+        colored(
+            "OS keyring을 사용할 수 없어 설정을 현재 srtgo 실행 중에만 보관합니다.",
+            "yellow",
+        )
+    )
+    if err:
+        print(colored(f"keyring: {err}", "yellow"))
+    _KEYRING_WARNING_SHOWN = True
+
+
+def _keyring_get(service_name: str, username: str):
+    try:
+        return keyring.get_password(service_name, username)
+    except keyring.errors.KeyringError as err:
+        _warn_keyring_fallback(err)
+        return _KEYRING_FALLBACK.get((service_name, username))
+
+
+def _keyring_set(service_name: str, username: str, password: str) -> None:
+    try:
+        keyring.set_password(service_name, username, password)
+    except keyring.errors.KeyringError as err:
+        _warn_keyring_fallback(err)
+        _KEYRING_FALLBACK[(service_name, username)] = password
+
+
+def _keyring_delete(service_name: str, username: str) -> None:
+    _KEYRING_FALLBACK.pop((service_name, username), None)
+    try:
+        keyring.delete_password(service_name, username)
+    except (keyring.errors.PasswordDeleteError, keyring.errors.KeyringError):
+        pass
+
+
 def set_telegram() -> bool:
-    token = keyring.get_password("telegram", "token") or ""
-    chat_id = keyring.get_password("telegram", "chat_id") or ""
+    token = _keyring_get("telegram", "token") or ""
+    chat_id = _keyring_get("telegram", "chat_id") or ""
 
     telegram_info = inquirer.prompt(
         [
@@ -317,21 +359,21 @@ def set_telegram() -> bool:
     token, chat_id = telegram_info["token"], telegram_info["chat_id"]
 
     try:
-        keyring.set_password("telegram", "ok", "1")
-        keyring.set_password("telegram", "token", token)
-        keyring.set_password("telegram", "chat_id", chat_id)
+        _keyring_set("telegram", "ok", "1")
+        _keyring_set("telegram", "token", token)
+        _keyring_set("telegram", "chat_id", chat_id)
         tgprintf = get_telegram()
         asyncio.run(tgprintf("[SRTGO] 텔레그램 설정 완료"))
         return True
     except Exception as err:
         print(err)
-        keyring.delete_password("telegram", "ok")
+        _keyring_delete("telegram", "ok")
         return False
 
 
 def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
-    token = keyring.get_password("telegram", "token")
-    chat_id = keyring.get_password("telegram", "chat_id")
+    token = _keyring_get("telegram", "token")
+    chat_id = _keyring_get("telegram", "chat_id")
 
     async def tgprintf(text):
         if token and chat_id:
@@ -458,10 +500,10 @@ def _train_identity(train) -> tuple:
 
 def set_card() -> None:
     card_info = {
-        "number": keyring.get_password("card", "number") or "",
-        "password": keyring.get_password("card", "password") or "",
-        "birthday": keyring.get_password("card", "birthday") or "",
-        "expire": keyring.get_password("card", "expire") or "",
+        "number": _keyring_get("card", "number") or "",
+        "password": _keyring_get("card", "password") or "",
+        "birthday": _keyring_get("card", "birthday") or "",
+        "expire": _keyring_get("card", "expire") or "",
     }
 
     card_info = inquirer.prompt(
@@ -490,19 +532,19 @@ def set_card() -> None:
     )
     if card_info:
         for key, value in card_info.items():
-            keyring.set_password("card", key, value)
-        keyring.set_password("card", "ok", "1")
+            _keyring_set("card", key, value)
+        _keyring_set("card", "ok", "1")
 
 
 def pay_card(rail, reservation) -> bool:
-    if keyring.get_password("card", "ok"):
-        birthday = keyring.get_password("card", "birthday")
+    if _keyring_get("card", "ok"):
+        birthday = _keyring_get("card", "birthday")
         return rail.pay_with_card(
             reservation,
-            keyring.get_password("card", "number"),
-            keyring.get_password("card", "password"),
+            _keyring_get("card", "number"),
+            _keyring_get("card", "password"),
             birthday,
-            keyring.get_password("card", "expire"),
+            _keyring_get("card", "expire"),
             0,
             "J" if len(birthday) == 6 else "S",
         )
@@ -511,8 +553,8 @@ def pay_card(rail, reservation) -> bool:
 
 def set_login(rail_type="SRT", debug=False):
     credentials = {
-        "id": keyring.get_password(rail_type, "id") or "",
-        "pass": keyring.get_password(rail_type, "pass") or "",
+        "id": _keyring_get(rail_type, "id") or "",
+        "pass": _keyring_get(rail_type, "pass") or "",
     }
 
     login_info = inquirer.prompt(
@@ -543,28 +585,25 @@ def set_login(rail_type="SRT", debug=False):
             code, msg = rail.last_login_error or (None, "KTX login failed")
             raise KorailError(msg, code)
 
-        keyring.set_password(rail_type, "id", login_info["id"])
-        keyring.set_password(rail_type, "pass", login_info["pass"])
-        keyring.set_password(rail_type, "ok", "1")
+        _keyring_set(rail_type, "id", login_info["id"])
+        _keyring_set(rail_type, "pass", login_info["pass"])
+        _keyring_set(rail_type, "ok", "1")
         return True
     except (SRTError, KorailError) as err:
         print(err)
-        try:
-            keyring.delete_password(rail_type, "ok")
-        except keyring.errors.PasswordDeleteError:
-            pass
+        _keyring_delete(rail_type, "ok")
         return False
 
 
 def login(rail_type="SRT", debug=False):
     if (
-        keyring.get_password(rail_type, "id") is None
-        or keyring.get_password(rail_type, "pass") is None
+        _keyring_get(rail_type, "id") is None
+        or _keyring_get(rail_type, "pass") is None
     ):
         set_login(rail_type)
 
-    user_id = keyring.get_password(rail_type, "id")
-    password = keyring.get_password(rail_type, "pass")
+    user_id = _keyring_get(rail_type, "id")
+    password = _keyring_get(rail_type, "pass")
 
     rail = SRT if rail_type == "SRT" else Korail
     return rail(user_id, password, verbose=debug)
@@ -580,16 +619,16 @@ def reserve(rail_type="SRT", debug=False):
     this_time = now.strftime("%H%M%S")
 
     defaults = {
-        "departure": keyring.get_password(rail_type, "departure")
+        "departure": _keyring_get(rail_type, "departure")
         or ("수서" if is_srt else "서울"),
-        "arrival": keyring.get_password(rail_type, "arrival") or "동대구",
-        "date": keyring.get_password(rail_type, "date") or today,
-        "time": keyring.get_password(rail_type, "time") or "120000",
-        "adult": int(keyring.get_password(rail_type, "adult") or 1),
-        "child": int(keyring.get_password(rail_type, "child") or 0),
-        "senior": int(keyring.get_password(rail_type, "senior") or 0),
-        "disability1to3": int(keyring.get_password(rail_type, "disability1to3") or 0),
-        "disability4to6": int(keyring.get_password(rail_type, "disability4to6") or 0),
+        "arrival": _keyring_get(rail_type, "arrival") or "동대구",
+        "date": _keyring_get(rail_type, "date") or today,
+        "time": _keyring_get(rail_type, "time") or "120000",
+        "adult": int(_keyring_get(rail_type, "adult") or 1),
+        "child": int(_keyring_get(rail_type, "child") or 0),
+        "senior": int(_keyring_get(rail_type, "senior") or 0),
+        "disability1to3": int(_keyring_get(rail_type, "disability1to3") or 0),
+        "disability4to6": int(_keyring_get(rail_type, "disability4to6") or 0),
     }
 
     # Set default stations if departure equals arrival
@@ -704,7 +743,7 @@ def reserve(rail_type="SRT", debug=False):
 
     # Save preferences
     for key, value in info.items():
-        keyring.set_password(rail_type, key, str(value))
+        _keyring_set(rail_type, key, str(value))
 
     # Adjust time if needed
     if info["date"] == today and int(info["time"]) < int(this_time):
