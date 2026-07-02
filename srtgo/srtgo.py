@@ -14,6 +14,7 @@ import asyncio
 import click
 import inquirer
 import keyring
+import os
 import shutil
 import subprocess
 import telegram
@@ -410,6 +411,7 @@ def _copy_to_clipboard(text: str) -> bool:
     commands = (
         ("pbcopy", ()),
         ("clip", ()),
+        ("clip.exe", ()),
         ("xclip", ("-selection", "clipboard")),
         ("xsel", ("--clipboard", "--input")),
     )
@@ -429,6 +431,78 @@ def _copy_to_clipboard(text: str) -> bool:
         except (OSError, subprocess.CalledProcessError):
             continue
     return False
+
+
+def _is_wsl() -> bool:
+    if os.name != "posix" or not os.path.exists("/proc/version"):
+        return False
+
+    try:
+        with open("/proc/version", encoding="utf-8") as proc_version:
+            version = proc_version.read().lower()
+    except OSError:
+        return False
+
+    return "microsoft" in version or "wsl" in version
+
+
+def _find_command(*candidates: str):
+    for candidate in candidates:
+        command = shutil.which(candidate)
+        if command:
+            return command
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _run_open_command(command: list[str]) -> bool:
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def _open_url(url: str) -> bool:
+    quoted_url = f'"{url}"'
+    if _is_wsl():
+        cmd = _find_command("cmd.exe", "/mnt/c/Windows/System32/cmd.exe")
+        if cmd and _run_open_command([cmd, "/c", "start", "", quoted_url]):
+            return True
+
+        powershell = _find_command(
+            "powershell.exe",
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        )
+        if powershell and _run_open_command(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Start-Process -FilePath $args[0]",
+                url,
+            ]
+        ):
+            return True
+
+    if sys_cmd := _find_command("open"):
+        return _run_open_command([sys_cmd, url])
+
+    if sys_cmd := _find_command("xdg-open"):
+        return _run_open_command([sys_cmd, url])
+
+    if sys_cmd := _find_command("cmd.exe"):
+        return _run_open_command([sys_cmd, "/c", "start", "", quoted_url])
+
+    return webbrowser.open_new(url)
 
 
 def _ktx_manual_booking_url(info: dict) -> str:
@@ -474,7 +548,7 @@ def _handoff_ktx_manual_booking(
     url = _ktx_manual_booking_url(info)
     handoff_text = _format_ktx_handoff_text(info, train, msg_passengers, seat_type)
     copied = _copy_to_clipboard(handoff_text)
-    opened = webbrowser.open(url)
+    opened = _open_url(url)
 
     print("\n" + colored("KTX 좌석이 확인되어 수동 예매로 넘깁니다.", "green"))
     print(handoff_text)
@@ -483,7 +557,7 @@ def _handoff_ktx_manual_booking(
     else:
         print(colored("클립보드 복사에 실패했습니다. 위 내용을 직접 참고하세요.", "yellow"))
     if opened:
-        print(colored("공식 코레일 예매 페이지를 열었습니다.", "green"))
+        print(colored("공식 코레일 예매 페이지를 새 창으로 열었습니다.", "green"))
     else:
         print(colored(f"브라우저 열기에 실패했습니다: {url}", "yellow"))
 
